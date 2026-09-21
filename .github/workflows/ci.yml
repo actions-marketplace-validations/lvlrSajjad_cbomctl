@@ -49,6 +49,12 @@ jobs:
         if: matrix.python-version == '3.12'
         run: python scripts/check_commands.py --check
 
+      # Every number the prose states about a fixture, a pack or the code is
+      # derived from the thing it describes. Offline; no fixture is fetched.
+      - name: Claimed numbers derive from what they describe
+        if: matrix.python-version == '3.12'
+        run: python scripts/check_stats.py
+
   cbom-schema-conformance:
     # Hand-built fixtures must stay valid CycloneDX, or they stop proving
     # anything about real input.
@@ -83,6 +89,32 @@ jobs:
           raise SystemExit(1 if failed else 0)
           PY
 
+      # The Tool Center entry is validated offline against a vendored copy of
+      # CycloneDX's tool schema, so `pytest -q` works on a laptop with no
+      # network. Upstream can still move under us, and the entry is about to be
+      # submitted to them -- so the drift is checked here, where a failure
+      # names the schema rather than the entry.
+      - name: The vendored Tool Center schema still matches upstream
+        run: |
+          python - <<'PY'
+          import json, pathlib, urllib.request
+          url = ("https://raw.githubusercontent.com/CycloneDX/tool-center"
+                 "/main/schemas/tool.schema.json")
+          local = pathlib.Path("tests/fixtures/schemas/"
+                               "tool-center-v2.tool.schema.json")
+          with urllib.request.urlopen(url) as r:
+              upstream = json.load(r)
+          if json.loads(local.read_text()) == upstream:
+              print("ok     vendored copy matches CycloneDX/tool-center@main")
+              raise SystemExit(0)
+          print("FAIL   CycloneDX/tool-center changed schemas/tool.schema.json.")
+          print("       Re-vendor it, re-run tests/test_tool_center_entry.py, and")
+          print("       update the provenance note in tests/fixtures/PROVENANCE.md:")
+          print(f"         curl -sS -o {local} \\")
+          print(f"           {url}")
+          raise SystemExit(1)
+          PY
+
   dogfood:
     # Run the action on our own fixtures. `continue-on-error` because the
     # conflict fixture is *designed* to fail — a green run here would mean the
@@ -105,6 +137,53 @@ jobs:
             || { echo "expected a non-zero exit on the conflict fixture"; exit 1; }
       - uses: actions/upload-artifact@v4
         with: { name: cbomctl-sarif, path: cbomctl.sarif }
+
+  sbom:
+    # cbomctl reads other people's bills of materials and shipped none of its
+    # own, which is a strange thing for a supply-chain-adjacent tool to ask of
+    # people. `scripts/gen_sbom.sh` builds one; the generator choice, the
+    # lifecycle type it produces and what the document deliberately does not
+    # assert are argued at length in that file. This job and `release.yml`
+    # both call it, so the document users download cannot drift from the one
+    # CI proves buildable.
+    #
+    # Safe on the weekly schedule: no secret, no tag, no fixture, nothing but
+    # PyPI. Worth running there for its own reason, too -- `pyproject.toml`
+    # declares ranges, so a weekly resolution of an unchanged commit can come
+    # back different. Nothing diffs two runs automatically. The output is
+    # reproducible so that if you do, a difference is a real change and not a
+    # new timestamp.
+    #
+    # The artifact is named for the commit it describes, and the document
+    # repeats that commit in `cbomctl:source-commit`, because a build SBOM of
+    # `main` is not the SBOM of a release: it states the version in
+    # `pyproject.toml`, which may already be published with a different
+    # resolution. The one users get is the asset `release.yml` attaches at the
+    # tag.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: ./scripts/gen_sbom.sh sbom/cbomctl.cdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cbomctl-sbom-${{ github.sha }}
+          path: sbom/cbomctl.cdx.json
+
+  published-copies:
+    # Diff the live dev.to articles against `outreach/devto/`. Not on every PR:
+    # a published copy drifts when someone corrects an article and does not
+    # re-paste it, which is a human-timescale event, and a red X on an
+    # unrelated PR is the wrong way to say it. `./scripts/check.sh` runs it
+    # locally, which is where it matters -- just before publishing the next one.
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python scripts/check_published.py
 
   policy-staleness:
     if: github.event_name == 'schedule'

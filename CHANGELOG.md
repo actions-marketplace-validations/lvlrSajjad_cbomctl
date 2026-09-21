@@ -6,6 +6,201 @@ Semantic versioning. Policy-pack versions move independently — see
 ## [Unreleased]
 
 ### Fixed
+- **`action.yml` builds a `cbomctl` command line, and nothing read it.** The
+  action's composite step composes an argv and runs it. What was checked was
+  the *declared inputs* — `check_our_action`, against the snippet in
+  `docs/ci.md` — never the argv itself. CI's `dogfood` job does run the
+  action, but down one path only: `format: sarif` with `output:` set and both
+  booleans left false. The `--strict` and `--fail-on-warn` branches were
+  composed by nothing, in CI or locally.
+
+  Confirmed by injecting `--jurisdiction` and `--fail-on-warn-typo` into
+  `action.yml`: `check_commands.py --check` exited 0 and all 450 tests passed.
+  The first would have broken every user of the action; the second only the
+  user who set `strict:` or `fail-on-warn:`, silently, because no run anywhere
+  composed that argv. The shipped file was correct — this is a gap in the
+  checking, not a bug that shipped.
+
+  `check_commands.py` now checks `action.yml` as a command surface: its
+  subcommand, flags and `inputs.` references against the CLI and the action's
+  own declarations, and then it *executes* the argv with every option turned
+  on. An undeclared `inputs.x` is included because Actions expands it to the
+  empty string rather than failing. This is the `aa7e3d0` gap in a different
+  file — a checker whose list of places to look omitted a real surface.
+
+- **The Show HN draft claimed its first comment was 186 words; it is 193.**
+  Hand-written, never counted — and `RESUME.md` had said 193 all along, so the
+  two files had contradicted each other for four releases. It is the launch
+  artifact, and the number was the one thing on the page nobody had checked.
+  `check_stats.py` derives it from the section now, alongside the length of
+  the PKI Consortium CfP abstract (written "~330", actually 322 — inside the
+  tilde, pinned to ±10% the way the 1,500-word article claim is, so it cannot
+  drift out of it before submission).
+
+- **The flag check was a substring test, so it could not see
+  `--jurisdiction`.** `--jurisdictions` is in `--help`, so the singular — the
+  likelier of the two typos — passed in prose *and* in fenced commands. Found
+  by injecting it into a scratch page under `docs/`. Matching is boundary-aware
+  now (`cli_has`), and the three tests covering it fail if it is reverted.
+
+### Added
+- **cbomctl publishes an SBOM of itself.** `scripts/gen_sbom.sh` builds a
+  CycloneDX document from a clean install of the wheel; `ci.yml` uploads one
+  on every run including the weekly schedule, and `release.yml` attaches
+  `cbomctl-<version>.cdx.json` to the GitHub release, generated in the `build`
+  job from the wheel that job just built rather than from a second build of
+  it. A tool that reads other people's bills of materials and published none
+  of its own was asking for a trust it did not extend.
+
+  **An SBOM, and not a CBOM — the distinction is the whole point.** Nothing
+  under `src/` imports `hashlib`, `hmac`, `secrets`, `ssl` or `cryptography`:
+  cbomctl evaluates cryptographic inventories and performs no cryptography, so
+  a CBOM of it would be an empty `components` array with a CycloneDX header on
+  it. That reads as evidence and is not, and generating one would have been
+  the exact failure this repository exists to argue against.
+  `check_stats.py` now derives the import count from the tree, so the two
+  passages that make this argument — in the README and in the script — fail
+  the build if it ever stops being true, rather than becoming quietly false in
+  the release that adds the import.
+
+  **`cyclonedx-py`, not syft.** For a tool whose input format is CycloneDX,
+  writing through that project's own implementation is the coherent choice: if
+  their writer and our reader ever disagree, the place to find out is here.
+  syft is the better tool for the job it is for — one scanner across many
+  ecosystems, containers and binaries especially — and we publish a
+  pure-Python wheel and an sdist. There is no image to scan, so its breadth
+  buys nothing and it would read the same `*.dist-info` directories through a
+  parser it does not own.
+
+  **Stamped `lifecycles: [{phase: build}]`**, because which kind of SBOM a
+  document is decides what it asserts, and one that does not say invites the
+  strongest reading. It is not a source SBOM: `pyproject.toml` declares ranges
+  and this names the versions they resolved to. It is not an analyzed SBOM:
+  nothing inspects the wheel's bytes, and every component is a distribution's
+  own metadata taken at its word. No component carries a hash, so it is not
+  evidence of what anyone else's install resolved — only of what this build
+  did, on one Python, for one platform.
+
+  Output is reproducible: no timestamp, no random serial number, and the
+  commit is stamped into `metadata.properties` instead, so two runs of the
+  same commit are byte-identical and a diff between two artifacts is a real
+  dependency change. Nothing diffs them automatically, and the CI artifact is
+  named for its commit so a build SBOM of `main` is not mistaken for the
+  release asset.
+- **`scripts/check_stats.py`, and it runs in `check.sh` and in CI.** Every
+  number the prose states about a fixture, a policy pack, the loader or a
+  vendored schema is derived from the thing it describes — 59 claims across
+  43 sites as this was written, in the docs, the README, the outreach
+  drafts, `PROVENANCE.md` and one module docstring in `src/`. Running it for the first time found three stale
+  numbers that a hand pass a day earlier had missed.
+
+  **Parsing the prose, not generating it** — argued at length in the file's
+  docstring. These numbers live in sentences, not only in table cells: "it
+  appears in 12 components; in 11 it is the only function recorded" carries the
+  argument of the page, and four of the six stale claims standing that morning
+  were in prose a generator cannot reach, one of them a docstring in `src/`.
+  The known weakness of parsing — reword the sentence and the check silently
+  stops applying — is closed by making a claim site mandatory: **a pattern that
+  matches nothing fails**, with the same weight as a wrong number.
+
+  Fixture claims are derived from the fixture JSON and cbomctl's claims through
+  the loader, deliberately kept apart, so a normalizer bug cannot rewrite the
+  description of the input it was meant to normalize.
+
+- **`scripts/check_published.py`** diffs the **live** dev.to articles against
+  `outreach/devto/`. `gen_syndication.py --check` pinned those files to
+  `docs/writing/` and stopped at the edge of the repository; between the file
+  and the copy a reader sees sits a paste into a browser, which is where 206
+  characters were once mangled into Mac Roman and where a later correction can
+  simply not be made. dev.to serves `body_markdown` to anonymous clients, so
+  the gap is closeable: both articles are live under `lvlrsajjad`, both were
+  byte-identical, and the published URLs are now recorded in `ARTICLES` so an
+  unrecorded article is reported unpublished rather than passed over. Title,
+  the four tags and the canonical URL are checked too — that last field is the
+  one that silently does not save.
+
+- **`tests/test_tool_center_entry.py`** validates the Tool Center submission in
+  `outreach/cyclonedx-tool-center-pr.md` against their schema on every `pytest`
+  run. The schema is **vendored** to `tests/fixtures/schemas/`, so the check
+  works offline like the rest of the suite; `ci.yml` separately diffs the
+  vendored copy against `CycloneDX/tool-center@main`, so upstream movement
+  fails by naming the schema rather than our entry. It was previously validated
+  once by hand against a copy in gitignored `.research/`, and the file has been
+  edited since.
+
+  The schema is at the obvious raw path,
+  `raw.githubusercontent.com/CycloneDX/tool-center/main/schemas/tool.schema.json`
+  — a note in this repo said that 404s, and it does not.
+
+- The command checker now reads **prose, not just fences**. Any `` `--flag` ``
+  written anywhere in the swept files must be one the CLI has, or must appear
+  in `FOREIGN_FLAGS` naming the tool it belongs to. `--strict-unknown` sat in
+  `docs/DESIGN.md` three times and not once inside a fence, so the 0.1.4
+  checker would still have missed all three. Today's six foreign flags all
+  belong to `open-quantum-secure` or are declared future work; none was fiction.
+- `.github/ISSUE_TEMPLATE/` is swept too — `bug.md` hands the reporter a
+  `cbomctl verdict ...` blank, now marked `illustrative` rather than looking
+  like something that runs.
+
+- **`check_commands.py` now resolves third-party actions.** Every `uses:` in a
+  documented workflow is checked against that action's own `action.yml`,
+  fetched at the ref the page names — not just ours. Because a Docker action
+  declares no inputs at all, `env:` names are checked against the action
+  repository's README at the same ref. An action the checker cannot resolve is
+  reported unchecked by name.
+
+### Fixed
+- **`docs/ci.md` told readers CBOMkit writes `cbom.json` to the workspace root.**
+  It writes `cbom/cbom.json`: the directory comes from `CBOMKIT_OUTPUT_DIR`,
+  which their `Main.java` defaults to `cbom`. The next step then passed
+  `cbom: cbom.json` to our action, so the documented workflow would have failed
+  at the first step that mattered. This is the second error found on that half
+  of the page — the first, `with: { output: cbom.json }` against an action that
+  declares no inputs, was fixed by hand in 0.1.4 and then went straight back to
+  being unchecked.
+
+- **The README's front page said "Every rule today is unverified."** The exact
+  inverse of the truth: 7 packs, all 7 verified, 40 rules, none of them
+  shipping `status: needs_verification`, one contested. It sat nineteen lines
+  below the pre-release banner asserting that all seven packs are read from
+  their primary sources, and contradicted `docs/ci.md`'s
+  "`--require-verified-policy` currently excludes nothing" as well. The
+  bullet's own point — that the tool does not give compliance advice — was
+  never in doubt, and survives; only the verification sentence was wrong, and
+  it was the only part of the passage nothing derived. The banner above it was
+  pinned to `packs.verified` and could not go stale; this sentence was three
+  lines of unchecked prose, which is the whole reason it outlived nine months
+  of the state it described being false. Its replacement is pinned to
+  `packs.rules` and holds `packs.unverified_rules` at 0, so a rule added,
+  dropped, or moved back to `needs_verification` fails the build. The
+  unverified-rule machinery is untouched: it is what the next pack that has not
+  been read will use.
+
+- **The policy-pack table on the README front page carried its header row three
+  times.** `| pack | state |` and its `|---|---|` separator, repeated twice
+  more before the seven data rows, which GitHub renders as two literal junk
+  rows at the top of the front page's most-read table. Nothing generates that
+  table — `gen_pack_docs.py` writes only `docs/policy-packs/` — so it was a
+  hand-editing accident with nothing standing between it and the reader.
+
+- **`policy-packs/README.md` said "No pack is verified yet"**, nine months after
+  all seven were verified from primary sources, in the file a downstream
+  consumer of the packs reads first. Its pack table also omitted `nist-ir8547`
+  entirely and marked BSI's signature-hybrid stance **unverified**, when
+  `bsi-hybrid-signatures` exists, is verified and says `recommended`.
+
+- **`docs/DESIGN.md` §9 said the same thing** — "v0.1 packs: … **None is
+  verified.**", six packs listed of seven — and its §5 table still had
+  `cryptoFunctions: [keygen]` only as 12, which `76ca56f` corrected everywhere
+  except there. `docs/ci.md` said `--require-verified-policy` "currently
+  excludes `cnsa-2.0`"; it excludes nothing. `scripts/gen_pack_docs.py` emitted
+  "NSA (pending verification)" into the generated pack index.
+
+- **`tests/fixtures/PROVENANCE.md` and the `normalize/purpose.py` docstring**
+  both still said five EC keys carry `primitive: pke`. Four do; the fifth `pke`
+  component is RSA-2048. Same off-by-one as `76ca56f`, in the two places that
+  pass had not looked.
+
 - **Two fixture statistics in `docs/purpose.md` were off by one**, both on the
   page whose argument is that the tool does not guess. `cryptoFunctions:
   [keygen]` and nothing else is 11 of 22 components, not 12 — `keygen` appears
@@ -19,21 +214,30 @@ Semantic versioning. Policy-pack versions move independently — see
   **8 of 22 unresolved — 36%, "more than a third"**, which is the line the
   README and the Show HN draft lean on.
 
-### Added
-- The command checker now reads **prose, not just fences**. Any `` `--flag` ``
-  written anywhere in the swept files must be one the CLI has, or must appear
-  in `FOREIGN_FLAGS` naming the tool it belongs to. `--strict-unknown` sat in
-  `docs/DESIGN.md` three times and not once inside a fence, so the 0.1.4
-  checker would still have missed all three. Today's six foreign flags all
-  belong to `open-quantum-secure` or are declared future work; none was fiction.
-- `.github/ISSUE_TEMPLATE/` is swept too — `bug.md` hands the reporter a
-  `cbomctl verdict ...` blank, now marked `illustrative` rather than looking
-  like something that runs.
-
 ### Changed
 - The routing from a fence to its check is one function, `check_block`, called
   by both the script and its tests. It was duplicated in three places, which
   would have let the thing that proves the checker works drift from the checker.
+- `RESUME.md` carries a banner saying it is a superseded v0.1.0 snapshot. Its
+  counts, and two article filenames that have since moved to `docs/writing/`,
+  describe that moment; nothing derives them, and now nothing reads them as
+  current either.
+
+### Decided against
+- **A scheduled CI job that runs the CBOMkit half of `docs/ci.md`.** Reasoning
+  in [`docs/roadmap.md`](docs/roadmap.md), short version: a workflow cannot
+  execute a workflow file it just wrote, so you either inline the steps — a
+  transcription of the page, which is the gap reopened one layer down — or
+  commit a generated file that then needs its own check. It would mostly test
+  an unpinned `:edge` Docker image, so its red runs would usually not be about
+  us. And the claim the page actually makes is a fact in two of their files,
+  which `check_commands.py` now fetches and checks on every run.
+- **Deriving the pack-stance table in `policy-packs/README.md`.** One cell per
+  pack collapses several purpose-scoped rules — `anssi-fr` carries both
+  `recommended` and, inside certification scope, `required` — and picking a
+  winner is a reading the packs do not state. Inventing one in a checker would
+  put a second, unversioned opinion beside the pack's. The table says so, and
+  `check_stats.py` leaves it alone.
 
 ## [0.1.4] — released 2026-09-06
 

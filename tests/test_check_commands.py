@@ -270,3 +270,222 @@ def test_every_swept_document_passes(doc):
         import shutil
         shutil.rmtree(cwd, ignore_errors=True)
     assert ok, "\n".join(f"{v} {w} {d}" for v, w, d in report if v == "FAIL")
+
+
+def test_an_input_a_third_party_action_does_not_declare_is_rejected(tmp_path):
+    """The 0.1.4 fix by hand, now a check.
+
+    `docs/ci.md` passed `with: { output: cbom.json }` to `cbomkit-action`,
+    which declares no inputs at all. It was corrected by reading their
+    `action.yml` and then went straight back to being unchecked, because
+    nothing in this file could reach somebody else's repository. It can now.
+    """
+    ok, report = run_on(tmp_path, "ci.md", """# C
+
+```yaml
+steps:
+  - uses: cbomkit/cbomkit-action@main
+    with:
+      output: cbom.json
+```
+""")
+    if "unreachable" in report:
+        pytest.skip("github.com unreachable; the check reports SKIP by design")
+    assert not ok
+    assert "declares none at all" in report
+
+
+def test_an_env_var_the_third_party_action_does_not_document_is_rejected(tmp_path):
+    """A docker action declares no inputs, so `action.yml` cannot catch a
+    mistyped `env:` key. Their README documents the names, and that is the
+    artifact to check against."""
+    ok, report = run_on(tmp_path, "ci.md", """# C
+
+```yaml
+steps:
+  - uses: cbomkit/cbomkit-action@main
+    env:
+      CBOMKIT_LANGUAGE: java
+```
+""")
+    if "unreachable" in report:
+        pytest.skip("github.com unreachable; the check reports SKIP by design")
+    assert not ok
+    assert "not documented in" in report
+
+
+def test_a_third_party_ref_that_does_not_exist_is_rejected(tmp_path):
+    ok, report = run_on(tmp_path, "ci.md", """# C
+
+```yaml
+steps:
+  - uses: cbomkit/cbomkit-action@v99.99.99
+    env:
+      CBOMKIT_LANGUAGES: java
+```
+""")
+    if "unreachable" in report:
+        pytest.skip("github.com unreachable; the check reports SKIP by design")
+    assert not ok
+    assert "has no action.yml" in report
+
+
+def test_an_unregistered_third_party_action_is_reported_unchecked(tmp_path):
+    """Not a failure — a visible hole. Adding an action to a documented
+    workflow should be a decision someone reads, not a silent gap."""
+    ok, report = run_on(tmp_path, "ci.md", """# C
+
+```yaml
+steps:
+  - uses: some-org/some-action@v1
+    with:
+      whatever: 1
+```
+""")
+    assert ok, report
+    assert "add it to THIRD_PARTY_ACTIONS" in report
+
+
+def test_the_documented_workflow_resolves_every_action_it_names(tmp_path):
+    """`docs/ci.md` itself, end to end: our action and all three of theirs."""
+    doc = ROOT / "docs" / "ci.md"
+    report: list[tuple[str, str, str]] = []
+    ok = True
+    cwd = cc.scratch()
+    try:
+        for b in cc.blocks(doc):
+            if b.lang in ("yaml", "yml"):
+                ok &= cc.check_block(b, cwd, report)
+    finally:
+        import shutil
+        shutil.rmtree(cwd, ignore_errors=True)
+    assert ok, "\n".join(f"{v} {w} {d}" for v, w, d in report if v == "FAIL")
+    assert "cbomkit/cbomkit-action" in "\n".join(d for _, _, d in report)
+
+
+# --- action.yml's own argv -------------------------------------------------
+#
+# `action.yml` builds a `cbomctl` command line and runs it. Nothing read that
+# argv until now: `check_our_action` checks the *inputs* a docs snippet passes,
+# and CI's `dogfood` job runs the action down one path only — `format: sarif`
+# with `output:` set, both booleans false. So the `--strict` and
+# `--fail-on-warn` branches were composed by nothing, anywhere, and a typo in
+# either shipped green.
+#
+# Verified before writing the checker, by injecting `--jurisdiction` and
+# `--fail-on-warn-typo` into `action.yml`: `check_commands.py --check` exited 0
+# and all 450 tests passed.
+
+
+def run_on_action(tmp_path: Path, text: str) -> tuple[bool, str]:
+    """Point the argv check at one throwaway `action.yml`."""
+    doc = tmp_path / "action.yml"
+    doc.write_text(text)
+    cwd = cc.scratch()
+    report: list[tuple[str, str, str]] = []
+    try:
+        help_text = cc.cli_help(cwd)
+        ok = cc.check_action_argv(cwd, report, help_text, path=doc)
+    finally:
+        import shutil
+        shutil.rmtree(cwd, ignore_errors=True)
+    return ok, "\n".join(f"{v} {w} {d}" for v, w, d in report)
+
+
+def _action(argv_line: str, inputs: str = "") -> str:
+    """A minimal composite action whose step builds `argv_line`."""
+    template = """name: t
+description: t
+inputs:
+  cbom: { description: c, required: true }
+  jurisdictions: { description: j, required: false, default: bsi-de }
+  format: { description: f, required: false, default: sarif }
+__INPUTS__
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: pip install --quiet .
+    - shell: bash
+      run: |
+        __ARGV__
+        cbomctl "$ARGS"
+"""
+    return template.replace("__ARGV__", argv_line).replace("__INPUTS__", inputs)
+
+
+def test_the_real_action_argv_runs():
+    """The shipped action.yml, executed with every option turned on."""
+    cwd = cc.scratch()
+    report: list[tuple[str, str, str]] = []
+    try:
+        ok = cc.check_action_argv(cwd, report, cc.cli_help(cwd))
+    finally:
+        import shutil
+        shutil.rmtree(cwd, ignore_errors=True)
+    assert ok, "\n".join(f"{v} {w} {d}" for v, w, d in report if v == "FAIL")
+    assert any(v == "RAN" for v, _, _ in report), "the argv was never executed"
+
+
+def test_a_flag_action_yml_hands_cbomctl_that_does_not_exist_is_rejected(tmp_path):
+    ok, report = run_on_action(tmp_path, _action(
+        'args=(verdict "x" --jurisdictions "y" --fail-on-warn-typo)'))
+    assert not ok
+    assert "--fail-on-warn-typo" in report
+
+
+def test_a_flag_that_is_only_a_prefix_of_a_real_flag_is_rejected(tmp_path):
+    """`--jurisdiction` is contained in `--jurisdictions`.
+
+    The check was a substring test, so the singular — the likelier typo of the
+    two — was the one thing it could not see. It is the whole reason
+    `cli_has` exists.
+    """
+    ok, report = run_on_action(tmp_path, _action(
+        'args=(verdict "x" --jurisdiction "y")'))
+    assert not ok
+    assert "--jurisdiction" in report
+
+
+def test_a_prefix_flag_in_prose_is_rejected_too(tmp_path):
+    """The same substring hole was in the prose sweep."""
+    cwd = cc.scratch()
+    doc = tmp_path / "d.md"
+    doc.write_text("# D\n\nPass `--jurisdiction` to pick packs.\n")
+    report: list[tuple[str, str, str]] = []
+    try:
+        ok = cc.check_prose_flags(doc, cwd, report, cc.cli_help(cwd))
+    finally:
+        import shutil
+        shutil.rmtree(cwd, ignore_errors=True)
+    assert not ok, "\n".join(f"{v} {w} {d}" for v, w, d in report)
+
+
+def test_a_real_flag_is_still_accepted_by_the_boundary_check():
+    """`cli_has` must not have made the check reject everything."""
+    cwd = cc.scratch()
+    try:
+        help_text = cc.cli_help(cwd)
+        for flag in ("--jurisdictions", "--strict", "--fail-on-warn",
+                     "--format", "--config", "--crqc-year"):
+            assert cc.cli_has(flag, help_text), flag
+        assert not cc.cli_has("--jurisdiction", help_text)
+        assert not cc.cli_has("--strict-unknown", help_text)
+    finally:
+        import shutil
+        shutil.rmtree(cwd, ignore_errors=True)
+
+
+def test_a_subcommand_action_yml_does_not_have_is_rejected(tmp_path):
+    ok, report = run_on_action(tmp_path, _action(
+        'args=(veridct "x" --jurisdictions "y")'))
+    assert not ok
+    assert "veridct" in report
+
+
+def test_an_undeclared_action_input_is_rejected(tmp_path):
+    """Actions expands an undeclared `inputs.x` to "" rather than failing."""
+    ok, report = run_on_action(tmp_path, _action(
+        'args=(verdict "${{ inputs.cbomfile }}" --jurisdictions "y")'))
+    assert not ok
+    assert "cbomfile" in report
