@@ -6,6 +6,31 @@ Semantic versioning. Policy-pack versions move independently — see
 ## [Unreleased]
 
 ### Fixed
+- **`--from sbom-tools` read zero assets from real `sbom-tools` output.** Every
+  `components[]` entry in their normalized payload is
+  `{canonical_id, component}`, with the `bom-ref` at
+  `identifiers.format_id`; the adapter read a flat list with a top-level
+  `bom_ref`. It had never met real output: its fixture was constructed from
+  their Rust structs, the same wrong way, and "shape confirmed upstream" in
+  the docs meant the field naming, never the nesting. Found on 2026-09-29 by
+  building sbom-tools from `main` and running the pipeline the moment their
+  CLI could produce the payload (`convert --to normalized`, their #367, added
+  at our request in #366 and not yet released). The error was
+  `no cryptographic assets found — is this a CBOM?` on every input.
+
+  `sbom-tools-normalized.json` is now captured from their binary, from a new
+  hand-built `sbom-tools-source.json`, and a test pins that the matrix and
+  conflicts through the adapter equal those from that CycloneDX directly. All
+  five adapter tests fail against the old adapter. By hand, the same held for
+  every fixture against all seven packs, apart from source locations.
+
+  Three losses on that path are now documented rather than discovered: their
+  parser keeps no `evidence.occurrences`, collapses an absent and an explicit
+  `unknown` primitive, and reads only CycloneDX 1.7's `ellipticCurve` — so a
+  1.6 CBOM's `curve` is dropped, including all four in the real CBOMkit
+  Keycloak output. None changed a verdict on our fixtures. The quickstart and
+  DESIGN.md no longer say the payload is unreachable from their CLI.
+
 - **`action.yml` builds a `cbomctl` command line, and nothing read it.** The
   action's composite step composes an argv and runs it. What was checked was
   the *declared inputs* — `check_our_action`, against the snippet in
@@ -44,6 +69,20 @@ Semantic versioning. Policy-pack versions move independently — see
   now (`cli_has`), and the three tests covering it fail if it is reverted.
 
 ### Added
+- **`docs/llms.txt`, generated from the site nav.** An index of the docs an
+  agent can read without crawling rendered pages, served at
+  `<site_url>llms.txt` — a subpath, since a GitHub project page has no domain
+  root to publish to. `scripts/gen_llms_txt.py` derives it from `mkdocs.yml`,
+  so a page added to the nav cannot be missing from it; `ci.yml` and
+  `check.sh` run it with `--check`. Every URL it emits was confirmed against
+  a `mkdocs build --strict` of the site; nothing pins that mapping yet.
+
+- **PyPI metadata that says what the package is.** `Documentation`, `Source`
+  and `Changelog` URLs — PyPI linked neither the docs site nor the changelog —
+  keywords naming the algorithms and bodies the packs cover, and classifiers
+  for `Topic :: Security`, the console environment and the three Python
+  versions CI tests. Reaches PyPI with the next release.
+
 - **cbomctl publishes an SBOM of itself.** `scripts/gen_sbom.sh` builds a
   CycloneDX document from a clean install of the wheel; `ci.yml` uploads one
   on every run including the weekly schedule, and `release.yml` attaches
